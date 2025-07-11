@@ -173,7 +173,7 @@ def sync() -> None:
     cur = conn.cursor()
     ensure_custom_field()
     group_id = ensure_import_group()
-    items = []
+    items: list[tuple[str, dict, str]] = []
     for headers, body in iter_messages(settings.mbox_path):
         if _is_spam(headers):
             continue
@@ -185,14 +185,15 @@ def sync() -> None:
     if not items:
         print("Nothing new to import")
         return
+    iterator = items
     if tqdm:
-        bar = tqdm(items, desc="Importing threads", unit="thread")
-    else:
-        bar = items  # type: ignore
+        iterator = tqdm(items, desc="Importing threads", unit="thread")
     try:
-        for tid, hdrs, body in bar:
+        for tid, hdrs, body in iterator:
             push(build_thread_ticket([(hdrs, body)], group_id))
-            cur.execute("INSERT INTO processed(thread_id) VALUES (?)", (tid,))
+            cur.execute(  # type: ignore
+                "INSERT OR IGNORE INTO processed(thread_id) VALUES (?)", (tid,)
+            )
             conn.commit()
             time.sleep(settings.rate_delay)
     except KeyboardInterrupt:
@@ -204,5 +205,3 @@ def sync() -> None:
     print("Import complete without duplicates")
 
 
-if __name__ == "__main__":
-    sync()
