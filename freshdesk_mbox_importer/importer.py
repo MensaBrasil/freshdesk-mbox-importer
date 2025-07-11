@@ -2,9 +2,10 @@
 
 import time
 import mailbox
-import sys
-
-from email.utils import parsedate_to_datetime
+import re
+from collections.abc import Iterable
+from email.utils import parseaddr, parsedate_to_datetime
+from email.header import decode_header
 
 import httpx
 from pydantic import BaseModel, Field
@@ -15,8 +16,7 @@ settings = ImporterSettings()
 
 
 class TicketPayload(BaseModel):
-    """Data model for Freshdesk ticket creation."""
-    requester: dict
+    email: str
     subject: str
     description: str
     status: int = 5
@@ -24,41 +24,62 @@ class TicketPayload(BaseModel):
     custom_fields: dict = Field(default_factory=dict)
 
 
+_spam_addr = re.compile(r"(mailer-daemon@|postmaster@|no[-_]reply@)", re.I)
+
+
+def _decode(text: str) -> str:
+    parts = decode_header(text)
+    return "".join(
+        (b.decode(enc or "utf-8", errors="replace") if isinstance(b, bytes) else b)
+        for b, enc in parts
+    )
+
+
+def _is_spam(h: dict) -> bool:
+    """Determine if the message is likely spam based on headers."""
+    if h.get("Precedence", "").lower() in {"bulk", "junk", "list"}:
+        return True
+    if h.get("Auto-Submitted", "").lower() not in {"", "no"}:
+        return True
+    if "all" in h.get("X-Auto-Response-Suppress", "").lower():
+        return True
+    sender = parseaddr(h.get("From", ""))[1]
+    return bool(_spam_addr.search(sender))
+
+
 def iter_messages(path: str) -> Iterable[tuple[dict, str]]:
-    """Yield (headers, body) tuples from the mbox file."""
     for msg in mailbox.mbox(path):
         hdrs = dict(msg.items())
         payload = msg.get_payload(decode=True)
-        if isinstance(payload, bytes):
-            body = payload.decode(errors="replace")
-        else:
-            body = str(payload)
+        body = payload.decode(errors="replace") if isinstance(payload, bytes) else str(payload)
         yield hdrs, body
 
 
 def build_ticket(headers: dict, body: str) -> TicketPayload:
-    """Construct a TicketPayload from email headers and body."""
+    sent_at = parsedate_to_datetime(headers.get("Date", ""))  # may raise if blank
     return TicketPayload(
-        requester={"email": headers.get("From", "unknown@example.com")},
-        subject=headers.get("Subject", "(no subject)"),
+        email=parseaddr(headers.get("From", ""))[1] or "unknown@example.com",
+        subject=_decode(headers.get("Subject", "")) or "(no subject)",
         description=body,
+        custom_fields={settings.original_date_field: sent_at.date().isoformat()},
     )
 
 
 def push(ticket: TicketPayload) -> None:
-    """Send the ticket to Freshdesk via API."""
     url = f"https://{settings.fd_domain}.freshdesk.com/api/v2/tickets"
-    auth = (settings.fd_key, "X")
-    resp = httpx.post(url, auth=auth, json=ticket.model_dump())
+    resp = httpx.post(url, auth=(settings.fd_key, "X"), json=ticket.model_dump())
     print(f"Response: {resp.status_code} {resp.reason_phrase} {resp.text}")
-    print(f"Ticket created: {ticket.subject} ({ticket.requester['email']})")
+    print(f"Ticket created: {ticket.subject} ({ticket.email})")
     time.sleep(settings.rate_delay)
 
 
 def sync() -> None:
-    """Main function to read mbox and push tickets to Freshdesk."""
     print(f"Reading mbox file: {settings.mbox_path}")
     for headers, body in iter_messages(settings.mbox_path):
+        if _is_spam(headers):
+            continue
         push(build_ticket(headers, body))
 
 
+if __name__ == "__main__":
+    sync()
