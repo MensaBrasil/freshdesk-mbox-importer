@@ -1,0 +1,13 @@
+[project]
+name = "freshdesk-mbox-importer"
+version = "0.1.0"
+author = ["Thiago Santos <t@mensa.org.br>"]
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.28.1",
+    "pydantic-settings>=2.10.1",
+    "tenacity>=9.1.2",
+    "tqdm>=4.67.1",
+]
