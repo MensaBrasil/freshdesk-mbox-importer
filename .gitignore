@@ -209,3 +209,5 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 takeout.mbox
+.fd_progress.json
+.fd_progress.db
